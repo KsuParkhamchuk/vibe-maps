@@ -97,3 +97,7 @@ pnpm run preview
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
+
+## UI
+
+![UI](./ui.png)

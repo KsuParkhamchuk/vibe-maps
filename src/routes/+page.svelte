@@ -30,6 +30,67 @@
 	let loadingPOIs = false;
 	let routeId = ''; // Unique identifier for the current route to force map refresh
 
+	// Loading message for POIs
+	let poiLoadingMessage = 'Finding interesting places along your journey...';
+
+	// Category preferences
+	let categoryPreferences = {
+		nationalParks: true,
+		landmarks: true,
+		scenicViews: true,
+		food: false,
+		cities: false,
+		quirky: false
+	};
+
+	// Function to get the active category count
+	function getActiveCategoryCount() {
+		return Object.values(categoryPreferences).filter(Boolean).length;
+	}
+
+	// Update loading message based on category preferences
+	$: {
+		const count = getActiveCategoryCount();
+		if (count === 0) {
+			poiLoadingMessage = 'Finding interesting places along your journey...';
+		} else if (count === 1) {
+			// Get the name of the active category
+			const activeCategory = Object.entries(categoryPreferences).find(
+				([_, isActive]) => isActive
+			)?.[0];
+
+			let categoryName = '';
+			switch (activeCategory) {
+				case 'nationalParks':
+					categoryName = 'national parks';
+					break;
+				case 'landmarks':
+					categoryName = 'landmarks';
+					break;
+				case 'scenicViews':
+					categoryName = 'scenic views';
+					break;
+				case 'food':
+					categoryName = 'food stops';
+					break;
+				case 'cities':
+					categoryName = 'cities';
+					break;
+				case 'quirky':
+					categoryName = 'quirky attractions';
+					break;
+				default:
+					categoryName = 'places';
+			}
+
+			poiLoadingMessage = `Finding ${categoryName} along your journey...`;
+		} else if (count === Object.keys(categoryPreferences).length) {
+			poiLoadingMessage = 'Finding all types of interesting places along your journey...';
+		} else {
+			poiLoadingMessage = `Finding your selected categories of places along your journey...`;
+		}
+	}
+
 	onMount(() => {
 		// Load Mapbox CSS
 		const link = document.createElement('link');
@@ -59,7 +120,8 @@
 					originLocation.place_name,
 					destinationLocation.place_name,
 					0, // We don't have distance yet
-					0 // We don't have duration yet
+					0, // We don't have duration yet
+					categoryPreferences // Pass the category preferences
 				);
 
 				if (placesRecommendation && placesRecommendation.recommendedPlaces) {
@@ -67,7 +129,7 @@
 					routePOIs = placesRecommendation.recommendedPlaces.map((place, index) => ({
 						id: `route-place-${index}-${Date.now()}`,
 						name: place.name,
-						category: 'Route Stop',
+						category: place.category || 'Route Stop',
 						description: `${place.description}\n\n${place.reasonToStop}`,
 						coordinate: place.coordinate || [0, 0],
 						distance: 0,
@@ -83,7 +145,7 @@
 							poi.coordinate[1] !== 0
 					);
 
-					console.log(`Found ${routePOIs.length} valid route POIs`);
+					console.log(`Found ${routePOIs.length} valid route POIs:`, routePOIs);
 				}
 			} catch (geminiError) {
 				console.error('Error getting route POIs from Gemini:', geminiError);
@@ -262,6 +324,42 @@
 					{error}
 				</div>
 			{/if}
+
+			<div class="category-preferences">
+				<h3>What would you like to see along your route?</h3>
+				<div class="checkbox-group">
+					<label class="checkbox-label" class:active={categoryPreferences.nationalParks}>
+						<input type="checkbox" bind:checked={categoryPreferences.nationalParks} />
+						<span class="checkbox-icon">🌲</span>
+						National Parks
+					</label>
+					<label class="checkbox-label" class:active={categoryPreferences.landmarks}>
+						<input type="checkbox" bind:checked={categoryPreferences.landmarks} />
+						<span class="checkbox-icon">🗿</span>
+						Landmarks
+					</label>
+					<label class="checkbox-label" class:active={categoryPreferences.scenicViews}>
+						<input type="checkbox" bind:checked={categoryPreferences.scenicViews} />
+						<span class="checkbox-icon">🏔️</span>
+						Scenic Views
+					</label>
+					<label class="checkbox-label" class:active={categoryPreferences.food}>
+						<input type="checkbox" bind:checked={categoryPreferences.food} />
+						<span class="checkbox-icon">🍽️</span>
+						Food
+					</label>
+					<label class="checkbox-label" class:active={categoryPreferences.cities}>
+						<input type="checkbox" bind:checked={categoryPreferences.cities} />
+						<span class="checkbox-icon">🏙️</span>
+						Cities
+					</label>
+					<label class="checkbox-label" class:active={categoryPreferences.quirky}>
+						<input type="checkbox" bind:checked={categoryPreferences.quirky} />
+						<span class="checkbox-icon">🎪</span>
+						Quirky Attractions
+					</label>
+				</div>
+			</div>
 		</form>
 
 		<div class="map-wrapper">
@@ -286,6 +384,15 @@
 					<span class="info-label">Duration:</span>
 					<span class="info-value">{duration}</span>
 				</div>
+			</div>
+		{/if}
+
+		{#if loadingPOIs}
+			<div class="loading-message">
+				<p>
+					<span class="loading-spinner"></span>
+					{poiLoadingMessage}
+				</p>
 			</div>
 		{/if}
 	</div>
@@ -631,5 +738,76 @@
 		z-index: 10;
 		animation: fadeIn 0.3s ease-out;
 		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+	}
+
+	/* Category preference styles */
+	.category-preferences {
+		margin-top: 1.5rem;
+		padding: 0 1rem;
+	}
+
+	.category-preferences h3 {
+		font-size: 1rem;
+		color: #4b5563;
+		margin-bottom: 1rem;
+		font-weight: 500;
+	}
+
+	.checkbox-group {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 1rem;
+		margin-bottom: 0.5rem;
+	}
+
+	.checkbox-label {
+		display: flex;
+		align-items: center;
+		font-size: 0.9rem;
+		color: #374151;
+		cursor: pointer;
+		padding: 0.5rem 1rem;
+		background-color: #f9fafb;
+		border-radius: 0.5rem;
+		border: 1px solid #e5e7eb;
+		transition: all 0.2s;
+	}
+
+	.checkbox-label:hover {
+		background-color: #f3f4f6;
+		border-color: #d1d5db;
+	}
+
+	.checkbox-label.active {
+		background-color: #dbeafe;
+		border-color: #93c5fd;
+		box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+	}
+
+	.checkbox-label input[type='checkbox'] {
+		margin-right: 8px;
+		accent-color: #3b82f6;
+	}
+
+	.checkbox-label input[type='checkbox']:checked + .checkbox-icon {
+		transform: scale(1.3);
+	}
+
+	.checkbox-icon {
+		margin-right: 8px;
+		font-size: 1.2rem;
+		display: inline-block;
+		transition: transform 0.2s;
+	}
+
+	@media (max-width: 768px) {
+		.checkbox-group {
+			gap: 0.5rem;
+		}
+
+		.checkbox-label {
+			padding: 0.4rem 0.7rem;
+			font-size: 0.85rem;
+		}
 	}
 </style>
