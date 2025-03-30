@@ -3,14 +3,9 @@
 	import { onMount } from 'svelte';
 	import LocationAutocomplete from '$lib/components/LocationAutocomplete.svelte';
 	import MapComponent from '$lib/components/MapComponent.svelte';
-	import {
-		getDirections,
-		segmentRoute,
-		findDestinationPOIs,
-		findMapboxPOIs,
-		type PlaceOfInterest
-	} from '$lib/services/mapbox';
+	import { getDirections, findDestinationPOIs, type PlaceOfInterest } from '$lib/services/mapbox';
 	import type { Location, DirectionsResult, RouteSegment } from '$lib/services/mapbox';
+	import { getGeminiRoutePlacesRecommendations } from '$lib/services/gemini';
 
 	// Location state
 	let originLocation: Location | null = null;
@@ -27,19 +22,13 @@
 	let distance = '';
 	let duration = '';
 
-	// Road trip planning settings
-	let targetDrivingHoursPerSegment = 5;
-
-	// Route segments
+	// Route segments are only kept for type compatibility
 	let routeSegments: RouteSegment[] = [];
 
 	// POI management
 	let segmentPOIs: Map<number, PlaceOfInterest[]> = new Map();
 	let loadingPOIs = false;
-	let showDestinationPOIs = true; // Flag to toggle destination POI display
-
-	// Testing Mapbox POIs - set to false and never used
-	let showMapboxPOIs = false;
+	let routeId = ''; // Unique identifier for the current route to force map refresh
 
 	onMount(() => {
 		// Load Mapbox CSS
@@ -60,14 +49,66 @@
 		segmentPOIs.clear();
 
 		try {
-			const directions = await getDirections(originLocation.center, destinationLocation.center);
+			// Step 1: Get route POIs from Gemini
+			loadingPOIs = true;
+			let routePOIs: PlaceOfInterest[] = [];
+
+			try {
+				console.log('Getting route POI recommendations from Gemini...');
+				const placesRecommendation = await getGeminiRoutePlacesRecommendations(
+					originLocation.place_name,
+					destinationLocation.place_name,
+					0, // We don't have distance yet
+					0 // We don't have duration yet
+				);
+
+				if (placesRecommendation && placesRecommendation.recommendedPlaces) {
+					// Convert to POIs
+					routePOIs = placesRecommendation.recommendedPlaces.map((place, index) => ({
+						id: `route-place-${index}-${Date.now()}`,
+						name: place.name,
+						category: 'Route Stop',
+						description: `${place.description}\n\n${place.reasonToStop}`,
+						coordinate: place.coordinate || [0, 0],
+						distance: 0,
+						importance: 3
+					}));
+
+					// Filter out any with invalid coordinates
+					routePOIs = routePOIs.filter(
+						(poi) =>
+							poi.coordinate &&
+							poi.coordinate.length === 2 &&
+							poi.coordinate[0] !== 0 &&
+							poi.coordinate[1] !== 0
+					);
+
+					console.log(`Found ${routePOIs.length} valid route POIs`);
+				}
+			} catch (geminiError) {
+				console.error('Error getting route POIs from Gemini:', geminiError);
+			}
+
+			// Step 2: Get directions with waypoints if we have any
+			const waypoints = routePOIs.length > 0 ? routePOIs.map((poi) => poi.coordinate) : undefined;
+
+			const directions = await getDirections(
+				originLocation.center,
+				destinationLocation.center,
+				waypoints
+			);
 
 			if (!directions) {
 				error = 'Could not find directions between these locations';
+				loadingPOIs = false;
 				return;
 			}
 
 			directionsData = directions;
+			routeId = `route-${Date.now()}`; // Generate new route ID on each route calculation
+
+			// Clear any previous error messages
+			error = null;
 
 			// Format distance (convert from meters to miles)
 			const miles = (directions.distance / 1609.34).toFixed(1);
@@ -83,16 +124,31 @@
 				duration = `${minutes} ${minutes === 1 ? 'minute' : 'minutes'}`;
 			}
 
-			// Generate route segments
-			routeSegments = segmentRoute(directions, targetDrivingHoursPerSegment);
+			// No need to generate segments, we now have waypoints
+			routeSegments = [];
 
-			// Fetch destination POIs if enabled
-			if (showDestinationPOIs) {
-				await fetchDestinationPOIs();
+			// Add the route POIs to the display
+			if (routePOIs.length > 0) {
+				console.log(`Adding ${routePOIs.length} POI waypoints to the display`);
+
+				// Add these POIs to our map (-2 index for route places)
+				const updatedPOIs = new Map([...segmentPOIs]);
+				updatedPOIs.set(-2, routePOIs);
+				segmentPOIs = updatedPOIs;
 			}
+
+			// Fetch destination POIs as well
+			await fetchDestinationPOIs();
+			loadingPOIs = false;
 		} catch (err) {
 			console.error('Error fetching directions:', err);
-			error = 'An error occurred while fetching directions';
+			// Handle unknown error type properly
+			if (err instanceof Error) {
+				error = `An error occurred while fetching directions: ${err.message}`;
+			} else {
+				error = 'An error occurred while fetching directions';
+			}
+			loadingPOIs = false;
 		} finally {
 			loading = false;
 		}
@@ -110,8 +166,15 @@
 				destinationLocation.place_name
 			);
 
-			// Use a special segment index for destination POIs (-1)
-			segmentPOIs = new Map([[-1, destinationPOIs]]);
+			// Create a new Map that preserves existing POIs (especially route place POIs at index -2)
+			const updatedPOIs = new Map([...segmentPOIs]);
+
+			// Add destination POIs with index -1
+			updatedPOIs.set(-1, destinationPOIs);
+
+			// Update the map with both destination and any existing route POIs
+			segmentPOIs = updatedPOIs;
+			console.log('Updated POIs with destinations, preserved route places:', segmentPOIs);
 
 			// Display a message if we got fallback POIs (Gemini API not configured)
 			if (destinationPOIs.length === 1 && destinationPOIs[0].id.startsWith('fallback')) {
@@ -123,61 +186,23 @@
 			console.error('Error fetching destination POIs:', error);
 
 			// Create a simple fallback POI with error information
-			segmentPOIs = new Map([
-				[
-					-1,
-					[
-						{
-							id: `error-poi-${Date.now()}`,
-							name: 'API Configuration Required',
-							category: 'Error',
-							description:
-								'Could not retrieve destination recommendations. Please check the console for details.',
-							coordinate: destinationLocation.center,
-							distance: 0,
-							importance: 1
-						}
-					]
-				]
+			// Preserve existing POIs but add error POI for destination
+			const updatedPOIs = new Map([...segmentPOIs]);
+			updatedPOIs.set(-1, [
+				{
+					id: `error-poi-${Date.now()}`,
+					name: 'API Configuration Required',
+					category: 'Error',
+					description:
+						'Could not retrieve destination recommendations. Please check the console for details.',
+					coordinate: destinationLocation.center,
+					distance: 0,
+					importance: 1
+				}
 			]);
+			segmentPOIs = updatedPOIs;
 		} finally {
 			loadingPOIs = false;
-		}
-	}
-
-	// Toggle destination POI display
-	function toggleDestinationPOIs() {
-		showDestinationPOIs = !showDestinationPOIs;
-
-		if (showDestinationPOIs && destinationLocation) {
-			fetchDestinationPOIs();
-		} else {
-			segmentPOIs.clear();
-			segmentPOIs = new Map(); // Trigger reactivity
-		}
-	}
-
-	// Update route segments when target driving hours changes
-	$: if (directionsData && targetDrivingHoursPerSegment) {
-		const newSegments = segmentRoute(directionsData, targetDrivingHoursPerSegment);
-
-		// Check if the segments have meaningfully changed by comparing the endpoint coordinates
-		const oldEndpoints = routeSegments
-			.map((s) => `${s.endCoordinate[0].toFixed(4)},${s.endCoordinate[1].toFixed(4)}`)
-			.join('|');
-		const newEndpoints = newSegments
-			.map((s) => `${s.endCoordinate[0].toFixed(4)},${s.endCoordinate[1].toFixed(4)}`)
-			.join('|');
-		const segmentsChanged = oldEndpoints !== newEndpoints;
-
-		// Update the segments regardless
-		routeSegments = newSegments;
-
-		// Log segment changes
-		if (segmentsChanged) {
-			console.log('Segments changed after slider adjustment');
-			console.log('Old endpoints:', oldEndpoints);
-			console.log('New endpoints:', newEndpoints);
 		}
 	}
 
@@ -261,81 +286,7 @@
 					<span class="info-label">Duration:</span>
 					<span class="info-value">{duration}</span>
 				</div>
-				<div class="segment-settings">
-					<label for="drivingHours" class="settings-label">
-						Segment driving hours: {targetDrivingHoursPerSegment}
-					</label>
-					<input
-						type="range"
-						id="drivingHours"
-						min="2"
-						max="8"
-						step="1"
-						bind:value={targetDrivingHoursPerSegment}
-						class="hours-slider"
-					/>
-					<div class="hours-range">
-						<span>2h</span>
-						<span>8h</span>
-					</div>
-				</div>
 			</div>
-
-			<div class="route-features">
-				<div class="route-feature-section">
-					<h3>Route Segments</h3>
-					<p>
-						The route is divided into segments of approximately {targetDrivingHoursPerSegment} hours
-						of driving time. Green markers indicate recommended stopping points.
-					</p>
-				</div>
-
-				<div class="poi-controls">
-					<div class="toggle-container">
-						<button class="toggle-button" on:click={toggleDestinationPOIs}>
-							{showDestinationPOIs ? 'Hide' : 'Show'} Destination POIs
-						</button>
-					</div>
-				</div>
-			</div>
-
-			{#if loadingPOIs}
-				<div class="loading-message">
-					<p>
-						<span class="loading-spinner"></span>
-						Finding interesting places along your journey...
-					</p>
-				</div>
-			{:else if showDestinationPOIs && segmentPOIs.has(-1) && segmentPOIs.get(-1) != null}
-				<div class="destination-poi-section">
-					<h3>Destination Highlights (Gemini 2.0 Powered)</h3>
-					<p>Discover the best attractions at your destination, recommended by Gemini 2.0 Flash:</p>
-
-					<div class="poi-list">
-						{#each segmentPOIs.get(-1) ?? [] as poi}
-							<div class="poi-item gemini-recommendation">
-								<div class="poi-name">{poi.name}</div>
-								<div class="poi-category">{poi.category}</div>
-								<div class="poi-description">{poi.description}</div>
-								{#if poi.address}
-									<div class="poi-address">{poi.address}</div>
-								{/if}
-								<div class="poi-footer">
-									<span class="gemini-badge">Gemini 2.0 Pick</span>
-								</div>
-							</div>
-						{/each}
-					</div>
-
-					<div class="api-notice">
-						<p>
-							<strong>Note:</strong> This feature requires a Gemini API key. Set the
-							<code>VITE_GEMINI_API_KEY</code>
-							environment variable to see personalized recommendations powered by Gemini 2.0 Flash.
-						</p>
-					</div>
-				</div>
-			{/if}
 		{/if}
 	</div>
 </main>
@@ -468,31 +419,6 @@
 		color: #111827;
 	}
 
-	.segment-settings {
-		margin-left: auto;
-		display: flex;
-		flex-direction: column;
-		min-width: 200px;
-	}
-
-	.settings-label {
-		font-size: 0.875rem;
-		color: #4b5563;
-		margin-bottom: 0.5rem;
-	}
-
-	.hours-slider {
-		width: 100%;
-	}
-
-	.hours-range {
-		display: flex;
-		justify-content: space-between;
-		font-size: 0.75rem;
-		color: #6b7280;
-		margin-top: 0.25rem;
-	}
-
 	.route-features {
 		display: flex;
 		gap: 2rem;
@@ -513,32 +439,6 @@
 		margin: 0.5rem 0;
 		color: #4b5563;
 		font-size: 0.9rem;
-	}
-
-	.poi-controls {
-		display: flex;
-		gap: 1rem;
-	}
-
-	.toggle-container {
-		display: flex;
-		gap: 0.5rem;
-	}
-
-	.toggle-button {
-		background-color: #3b82f6;
-		color: white;
-		border: none;
-		border-radius: 0.375rem;
-		padding: 0.5rem 1rem;
-		font-size: 0.875rem;
-		font-weight: 600;
-		cursor: pointer;
-		transition: background-color 0.2s;
-	}
-
-	.toggle-button:hover {
-		background-color: #2563eb;
 	}
 
 	.loading-message {
@@ -572,6 +472,11 @@
 		border-top: 1px solid #e5e7eb;
 	}
 
+	.route-places-section {
+		padding: 1rem 1.5rem;
+		border-top: 1px solid #e5e7eb;
+	}
+
 	.poi-list {
 		display: grid;
 		grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -584,6 +489,20 @@
 		background-color: #f9fafb;
 		border-radius: 0.375rem;
 		border-left: 4px solid #f59e0b;
+	}
+
+	.route-place {
+		border-left: 4px solid #3b82f6; /* Blue for route stops */
+		position: relative;
+	}
+
+	.route-badge {
+		font-size: 0.7rem;
+		background-color: #3b82f6;
+		color: white;
+		padding: 0.2rem 0.5rem;
+		border-radius: 1rem;
+		display: inline-block;
 	}
 
 	.poi-name {
@@ -661,5 +580,56 @@
 		padding: 0.1rem 0.3rem;
 		border-radius: 0.25rem;
 		font-family: monospace;
+	}
+
+	.success-message {
+		margin-top: 0.5rem;
+		padding: 0.5rem 1rem;
+		background-color: #dcfce7;
+		color: #166534;
+		border-radius: 0.375rem;
+		font-weight: 500;
+		animation:
+			fadeIn 0.3s ease-out,
+			fadeOut 0.5s ease-in 4.5s forwards;
+		position: absolute;
+		right: 1rem;
+		z-index: 10;
+	}
+
+	@keyframes fadeIn {
+		from {
+			opacity: 0;
+			transform: translateY(-10px);
+		}
+		to {
+			opacity: 1;
+			transform: translateY(0);
+		}
+	}
+
+	@keyframes fadeOut {
+		from {
+			opacity: 1;
+			transform: translateY(0);
+		}
+		to {
+			opacity: 0;
+			transform: translateY(-10px);
+		}
+	}
+
+	.building-route-message {
+		margin-top: 0.5rem;
+		padding: 0.5rem 1rem;
+		background-color: #f0f9ff;
+		color: #0369a1;
+		border-radius: 0.375rem;
+		font-weight: 500;
+		position: absolute;
+		right: 1rem;
+		z-index: 10;
+		animation: fadeIn 0.3s ease-out;
+		box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 	}
 </style>

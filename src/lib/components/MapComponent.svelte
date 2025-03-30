@@ -277,67 +277,8 @@
 		segmentMarkers.forEach((marker) => marker.remove());
 		segmentMarkers = [];
 
-		// Skip if no segments
-		if (!routeSegments || routeSegments.length === 0) {
-			return;
-		}
-
-		// Add markers for each segment endpoint (except the very first and last which are origin/destination)
-		for (let i = 0; i < routeSegments.length; i++) {
-			// Skip the first segment's starting point (it's the origin)
-			if (i > 0) {
-				const segment = routeSegments[i];
-				const markerEl = document.createElement('div');
-				markerEl.className = 'segment-marker';
-
-				// Style the marker
-				markerEl.style.width = '30px';
-				markerEl.style.height = '30px';
-				markerEl.style.borderRadius = '50%';
-				markerEl.style.background = '#10b981'; // green color
-				markerEl.style.border = '2px solid white';
-				markerEl.style.boxShadow = '0 0 8px rgba(0,0,0,0.3)';
-				markerEl.style.display = 'flex';
-				markerEl.style.alignItems = 'center';
-				markerEl.style.justifyContent = 'center';
-				markerEl.style.color = 'white';
-				markerEl.style.fontWeight = 'bold';
-				markerEl.style.fontSize = '14px';
-
-				// Add segment number
-				markerEl.textContent = `${i}`;
-
-				// Create popup with segment info
-				const popup = new mapboxgl.Popup({
-					offset: 25,
-					closeButton: false
-				});
-
-				popup.setHTML(`
-					<div style="text-align: center;">
-						<strong>Segment ${i} Endpoint</strong>
-						<p>Stop here after ${Math.round(segment.duration / 3600)} hours of driving</p>
-					</div>
-				`);
-
-				// Create and add the marker
-				const marker = new mapboxgl.Marker(markerEl)
-					.setLngLat(segment.startCoordinate)
-					.setPopup(popup);
-
-				marker.addTo(map);
-				segmentMarkers.push(marker);
-
-				// Add hover behavior
-				markerEl.addEventListener('mouseenter', () => {
-					popup.addTo(map);
-				});
-
-				markerEl.addEventListener('mouseleave', () => {
-					setTimeout(() => popup.remove(), 300);
-				});
-			}
-		}
+		// We no longer display segment markers since we're using POIs as waypoints
+		// The code for creating segment markers has been removed as per requirements
 	}
 
 	// Update POI markers
@@ -388,14 +329,14 @@
 				el.style.fontSize = '20px';
 				el.style.zIndex = '5';
 
-				// Add restaurant icon
+				// Update restaurant icon to be consistent with other food icons
 				el.textContent = '🍽️';
 
 				// Create popup with POI info
 				const popup = new mapboxgl.Popup({
 					offset: 25,
 					closeButton: false,
-					maxWidth: '300px'
+					maxWidth: '250px'
 				});
 
 				const category = poi.category
@@ -410,34 +351,51 @@
 					? `<p style="margin: 4px 0; color: #64748b; font-size: 13px;">${poi.address}</p>`
 					: '';
 
-				const coordinates = `<p style="margin: 4px 0; color: #4b5563; font-size: 12px; font-family: monospace; background: #f3f4f6; padding: 4px; border-radius: 4px;">
-					Coordinates: [${poi.coordinate[1].toFixed(6)}, ${poi.coordinate[0].toFixed(6)}]
-				</p>`;
+				// Immediately start fetching an image for this place
+				const imagePromise = fetchLocationPhoto(poi.name);
 
+				// Set initial popup content with loading state
 				popup.setHTML(`
-					<div style="text-align: center;">
-						<h3 style="margin: 0 0 4px 0; font-size: 16px;">${poi.name}</h3>
-						<span style="color: #047857; font-weight: bold;">Restaurant</span>
-						${category}
-						${description}
-						${address}
-						${coordinates}
+					<div class="popup-content">
+						<h3 style="margin: 0; padding: 8px 0; font-size: 18px; text-align: center;">${poi.name}</h3>
+						<div class="loading-indicator" style="height: 150px; display: flex; align-items: center; justify-content: center;">
+							<div>Loading image...</div>
+						</div>
 					</div>
 				`);
+
+				// Add hover events to replace content with image when ready
+				el.addEventListener('mouseenter', async () => {
+					// Add popup to map with loading content
+					popup.addTo(map);
+
+					try {
+						// Wait for image to load
+						const imageUrl = await imagePromise;
+
+						// Only update if popup is still open
+						if (popup.isOpen()) {
+							popup.setHTML(`
+								<div class="popup-content">
+									<h3 style="margin: 0; padding: 8px 0; font-size: 18px; text-align: center;">${poi.name}</h3>
+									<img src="${imageUrl}" alt="${poi.name}" style="width: 100%; border-radius: 4px; object-fit: cover; height: 150px;">
+								</div>
+							`);
+						}
+					} catch (error) {
+						console.error('Error updating popup with image:', error);
+					}
+				});
+
+				// Remove popup on mouse leave
+				el.addEventListener('mouseleave', () => {
+					setTimeout(() => popup.remove(), 300);
+				});
 
 				// Create and add the marker
 				const marker = new mapboxgl.Marker(el).setLngLat(poi.coordinate).setPopup(popup);
 				marker.addTo(map);
 				poiMarkers.push(marker);
-
-				// Add hover behavior
-				el.addEventListener('mouseenter', () => {
-					popup.addTo(map);
-				});
-
-				el.addEventListener('mouseleave', () => {
-					setTimeout(() => popup.remove(), 300);
-				});
 			});
 		}
 
@@ -493,6 +451,16 @@
 						icon = '🗼';
 					} else if (category.includes('restaurant') || category.includes('cafe')) {
 						icon = '🍽️';
+					} else if (category.includes('museum')) {
+						icon = '🏛️';
+					} else if (category.includes('beach') || category.includes('coast')) {
+						icon = '🏖️';
+					} else if (category.includes('mountain') || category.includes('peak')) {
+						icon = '⛰️';
+					} else if (category.includes('entertainment') || category.includes('theater')) {
+						icon = '🎭';
+					} else if (category.includes('shopping') || category.includes('mall')) {
+						icon = '🛍️';
 					}
 				}
 
@@ -502,7 +470,7 @@
 				const popup = new mapboxgl.Popup({
 					offset: 25,
 					closeButton: false,
-					maxWidth: '300px'
+					maxWidth: '250px'
 				});
 
 				const primaryLabel = isPrimary
@@ -517,32 +485,262 @@
 					? `<p style="margin: 4px 0; font-style: italic;">${poi.description}</p>`
 					: '';
 
+				// Immediately start fetching an image for this place
+				const imagePromise = fetchLocationPhoto(poi.name);
+
+				// Set initial popup content with loading state
 				popup.setHTML(`
-					<div style="text-align: center;">
-						<h3 style="margin: 0 0 4px 0; font-size: 16px;">${poi.name}</h3>
-						${primaryLabel}
-						${category}
-						${description}
-						<p style="margin: 4px 0; color: #64748b; font-size: 13px;">${poi.address || ''}</p>
+					<div class="popup-content">
+						<h3 style="margin: 0; padding: 8px 0; font-size: 18px; text-align: center;">${poi.name}</h3>
+						<div class="loading-indicator" style="height: 150px; display: flex; align-items: center; justify-content: center;">
+							<div>Loading image...</div>
+						</div>
 					</div>
 				`);
+
+				// Add hover events to replace content with image when ready
+				el.addEventListener('mouseenter', async () => {
+					// Add popup to map with loading content
+					popup.addTo(map);
+
+					try {
+						// Wait for image to load
+						const imageUrl = await imagePromise;
+
+						// Only update if popup is still open
+						if (popup.isOpen()) {
+							popup.setHTML(`
+								<div class="popup-content">
+									<h3 style="margin: 0; padding: 8px 0; font-size: 18px; text-align: center;">${poi.name}</h3>
+									<img src="${imageUrl}" alt="${poi.name}" style="width: 100%; border-radius: 4px; object-fit: cover; height: 150px;">
+								</div>
+							`);
+						}
+					} catch (error) {
+						console.error('Error updating popup with image:', error);
+					}
+				});
+
+				// Remove popup on mouse leave
+				el.addEventListener('mouseleave', () => {
+					setTimeout(() => popup.remove(), 300);
+				});
 
 				// Create and add the marker
 				const marker = new mapboxgl.Marker(el).setLngLat(poi.coordinate).setPopup(popup);
 				marker.addTo(map);
 				poiMarkers.push(marker);
-
-				// Add hover behavior
-				el.addEventListener('mouseenter', () => {
-					popup.addTo(map);
-				});
-
-				el.addEventListener('mouseleave', () => {
-					setTimeout(() => popup.remove(), 300);
-				});
 			});
 		} else {
 			console.log('No destination POIs available');
+		}
+
+		// Check if we have route place POIs
+		if (segmentPOIs.has(-2)) {
+			const routePlacePOIs = segmentPOIs.get(-2) || [];
+			console.log(`Displaying ${routePlacePOIs.length} route place POIs:`, routePlacePOIs);
+
+			// Add markers for route place points of interest
+			routePlacePOIs.forEach((poi, poiIndex) => {
+				// Check if POI coordinate is valid
+				if (!poi.coordinate || poi.coordinate.length !== 2) {
+					console.error(`Invalid POI coordinate for route place POI ${poiIndex}:`, poi);
+					return;
+				}
+
+				// Log a simpler message without coordinates
+				console.log(`Adding route place POI marker for: ${poi.name}`);
+
+				// Create marker element
+				const el = document.createElement('div');
+				el.className = 'poi-marker route-place-marker';
+
+				// Determine the attraction type based on name/description to show appropriate icon
+				let attractionType = 'general';
+				let icon = '🏞️'; // Default scenic view icon
+
+				// Extract the category from the name and description
+				const nameAndDesc = (poi.name + ' ' + (poi.description || '')).toLowerCase();
+
+				if (
+					nameAndDesc.includes('national park') ||
+					nameAndDesc.includes('state park') ||
+					nameAndDesc.includes('forest') ||
+					nameAndDesc.includes('wilderness')
+				) {
+					attractionType = 'park';
+					icon = '🌲'; // Tree/forest
+				} else if (
+					nameAndDesc.includes('mountain') ||
+					nameAndDesc.includes('peak') ||
+					nameAndDesc.includes('hill') ||
+					nameAndDesc.includes('overlook') ||
+					nameAndDesc.includes('view') ||
+					nameAndDesc.includes('scenic')
+				) {
+					attractionType = 'mountain';
+					icon = '⛰️'; // Mountain
+				} else if (
+					nameAndDesc.includes('beach') ||
+					nameAndDesc.includes('shore') ||
+					nameAndDesc.includes('coast') ||
+					nameAndDesc.includes('ocean') ||
+					nameAndDesc.includes('bay') ||
+					nameAndDesc.includes('lake')
+				) {
+					attractionType = 'water';
+					icon = '🏖️'; // Beach
+				} else if (
+					nameAndDesc.includes('museum') ||
+					nameAndDesc.includes('gallery') ||
+					nameAndDesc.includes('art') ||
+					nameAndDesc.includes('exhibit')
+				) {
+					attractionType = 'museum';
+					icon = '🏛️'; // Museum
+				} else if (
+					nameAndDesc.includes('monument') ||
+					nameAndDesc.includes('memorial') ||
+					nameAndDesc.includes('historic') ||
+					nameAndDesc.includes('landmark')
+				) {
+					attractionType = 'monument';
+					icon = '🗿'; // Monument
+				} else if (
+					nameAndDesc.includes('garden') ||
+					nameAndDesc.includes('botanical') ||
+					nameAndDesc.includes('nature')
+				) {
+					attractionType = 'garden';
+					icon = '🌷'; // Flower
+				} else if (
+					nameAndDesc.includes('bridge') ||
+					nameAndDesc.includes('arch') ||
+					nameAndDesc.includes('building') ||
+					nameAndDesc.includes('tower')
+				) {
+					attractionType = 'architecture';
+					icon = '🏛️'; // Classical building
+				} else if (
+					nameAndDesc.includes('canyon') ||
+					nameAndDesc.includes('gorge') ||
+					nameAndDesc.includes('rock') ||
+					nameAndDesc.includes('cave') ||
+					nameAndDesc.includes('cliff')
+				) {
+					attractionType = 'geology';
+					icon = '🏔️'; // Snow-capped mountain
+				} else if (
+					nameAndDesc.includes('zoo') ||
+					nameAndDesc.includes('wildlife') ||
+					nameAndDesc.includes('aquarium')
+				) {
+					attractionType = 'wildlife';
+					icon = '🦁'; // Lion
+				} else if (
+					nameAndDesc.includes('theme park') ||
+					nameAndDesc.includes('amusement') ||
+					nameAndDesc.includes('entertainment')
+				) {
+					attractionType = 'entertainment';
+					icon = '🎡'; // Ferris wheel
+				} else if (
+					nameAndDesc.includes('weird') ||
+					nameAndDesc.includes('unusual') ||
+					nameAndDesc.includes('strange') ||
+					nameAndDesc.includes('roadside')
+				) {
+					attractionType = 'quirky';
+					icon = '🗿'; // Moai statue for quirky roadside attractions
+				}
+
+				// Style the marker - use blue for route stops
+				el.style.width = '40px';
+				el.style.height = '40px';
+				el.style.borderRadius = '50%';
+				el.style.background = '#3b82f6'; // Blue for route stops
+				el.style.border = '3px solid white';
+				el.style.boxShadow = '0 0 12px rgba(59, 130, 246, 0.5)';
+				el.style.display = 'flex';
+				el.style.alignItems = 'center';
+				el.style.justifyContent = 'center';
+				el.style.color = 'white';
+				el.style.fontWeight = 'bold';
+				el.style.fontSize = '20px';
+				el.style.zIndex = '6'; // Higher z-index to make sure route places are visible
+
+				// Use the categorized icon
+				el.textContent = icon;
+
+				// Create popup with POI info
+				const popup = new mapboxgl.Popup({
+					offset: 25,
+					closeButton: false,
+					maxWidth: '250px'
+				});
+
+				// Parse description - it contains both description and reasonToStop
+				const descriptionParts = (poi.description || '').split('\n\n');
+				const description = descriptionParts[0] || '';
+				const reasonToStop = descriptionParts[1] || '';
+
+				// Immediately start fetching an image for this place
+				const imagePromise = fetchLocationPhoto(poi.name);
+
+				// Set initial popup content with loading state
+				popup.setHTML(`
+					<div class="popup-content">
+						<h3 style="margin: 0; padding: 8px 0; font-size: 18px; text-align: center;">${poi.name}</h3>
+						<div class="loading-indicator" style="height: 150px; display: flex; align-items: center; justify-content: center;">
+							<div>Loading image...</div>
+						</div>
+					</div>
+				`);
+
+				// Add hover events to replace content with image when ready
+				el.addEventListener('mouseenter', async () => {
+					// Add popup to map with loading content
+					popup.addTo(map);
+
+					try {
+						// Wait for image to load
+						const imageUrl = await imagePromise;
+
+						// Only update if popup is still open
+						if (popup.isOpen()) {
+							popup.setHTML(`
+								<div class="popup-content">
+									<h3 style="margin: 0; padding: 8px 0; font-size: 18px; text-align: center;">${poi.name}</h3>
+									<img src="${imageUrl}" alt="${poi.name}" style="width: 100%; border-radius: 4px; object-fit: cover; height: 150px;">
+								</div>
+							`);
+						}
+					} catch (error) {
+						console.error('Error updating popup with image:', error);
+					}
+				});
+
+				// Remove popup on mouse leave
+				el.addEventListener('mouseleave', () => {
+					setTimeout(() => popup.remove(), 300);
+				});
+
+				try {
+					// Create and add the marker, using the exact coordinates from the POI
+					const lngLat = poi.coordinate;
+					console.log(`  Creating marker for ${poi.name}`);
+
+					const marker = new mapboxgl.Marker(el).setLngLat(lngLat).setPopup(popup);
+
+					marker.addTo(map);
+					console.log(`  Marker added to map`);
+					poiMarkers.push(marker);
+				} catch (error) {
+					console.error(`Error creating marker for ${poi.name}:`, error);
+				}
+			});
+		} else {
+			console.log('No route place POIs available');
 		}
 	}
 
@@ -583,7 +781,8 @@
 	// Watch for changes to segment data
 	$: if (mapInitialized && map && routeSegments !== previousSegments) {
 		previousSegments = [...routeSegments];
-		updateSegmentMarkers();
+		// We no longer update segment markers
+		// updateSegmentMarkers(); <-- removed this call
 	}
 
 	// Watch for changes to POI data

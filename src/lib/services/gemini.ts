@@ -44,6 +44,23 @@ interface GeminiPOIRecommendation {
 }
 
 /**
+ * Interface for a place recommended by Gemini along a route
+ */
+interface GeminiRecommendedPlace {
+  name: string;
+  description: string;
+  reasonToStop: string;
+  coordinate?: [number, number];
+}
+
+/**
+ * Interface for route places recommendation from Gemini
+ */
+interface GeminiRoutePlacesRecommendation {
+  recommendedPlaces: GeminiRecommendedPlace[];
+}
+
+/**
  * Validates if the Gemini API key is available
  */
 function validateApiConfig(): boolean {
@@ -88,6 +105,47 @@ Example format:
 }
 
 /**
+ * Generates a prompt for the Gemini API to get recommended places along a route
+ */
+function generatePlacesRecommendationPrompt(
+  originName: string, 
+  destinationName: string, 
+  distance: number, 
+  duration: number
+): string {
+  return `I'm planning a road trip from ${originName} to ${destinationName}. The total distance is ${(distance / 1609.34).toFixed(1)} miles and would take approximately ${(duration / 3600).toFixed(1)} hours of continuous driving.
+
+Based on this information, recommend 2-4 diverse and interesting stopping places along this route. Focus on unique attractions, natural wonders, landmarks, and hidden gems rather than just cities. Consider:
+1. A reasonable daily driving time (around 5-8 hours per day)
+2. Diverse types of attractions (national parks, natural wonders, unique landmarks, historical sites, roadside attractions)
+3. Places that are directly on or very close to the route (not requiring long detours)
+4. Places that showcase the unique character and natural features of the regions you're driving through
+
+IMPORTANT: Prioritize unique attractions and natural wonders over generic cities/towns. Examples might include: scenic overlooks, national/state parks, unusual roadside attractions, famous landmarks, historical sites, natural wonders, etc.
+
+For each place, provide:
+1. Specific name of the attraction or landmark (not just a city name)
+2. Brief, evocative description of what makes it special and worth visiting
+3. Why it's a good stopping point on this journey
+4. Coordinates as precisely as possible [longitude, latitude]
+
+Please respond ONLY with a valid JSON object in the following format:
+{
+  "recommendedPlaces": [
+    {
+      "name": "Specific Attraction/Landmark Name",
+      "description": "Brief, engaging description highlighting what makes this place special",
+      "reasonToStop": "Why this is a perfect stop on this journey",
+      "coordinate": [longitude, latitude]
+    },
+    // More place objects as needed
+  ]
+}
+
+Do not include any text outside of this JSON object.`;
+}
+
+/**
  * Parses a JSON string from Gemini response
  */
 function extractJsonFromResponse(text: string): GeminiPOIRecommendation[] {
@@ -99,6 +157,25 @@ function extractJsonFromResponse(text: string): GeminiPOIRecommendation[] {
     }
     
     // If no array match, try parsing the whole response
+    return JSON.parse(text);
+  } catch (error) {
+    console.error('Failed to parse JSON from Gemini response:', error);
+    throw new Error('Invalid response format from Gemini API');
+  }
+}
+
+/**
+ * Parses a JSON object from Gemini response
+ */
+function extractJsonObjectFromResponse(text: string): GeminiRoutePlacesRecommendation {
+  try {
+    // Find the JSON object in the response (sometimes Gemini adds explanatory text)
+    const jsonMatch = text.match(/\{\s*".*"\s*:\s*.*\}/s);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    
+    // If no object match, try parsing the whole response
     return JSON.parse(text);
   } catch (error) {
     console.error('Failed to parse JSON from Gemini response:', error);
@@ -195,6 +272,89 @@ export async function getGeminiPOIRecommendations(
     throw new Error('No recommendations received from Gemini API');
   } catch (error) {
     console.error('Error fetching POI recommendations from Gemini:', error);
+    throw error;
+  }
+}
+
+/**
+ * Makes a request to the Gemini API to get recommended places along a route
+ */
+export async function getGeminiRoutePlacesRecommendations(
+  originName: string,
+  destinationName: string,
+  distance: number,
+  duration: number
+): Promise<GeminiRoutePlacesRecommendation> {
+  // Check if API key is configured
+  if (!validateApiConfig()) {
+    throw new Error('Gemini API is not properly configured');
+  }
+
+  const prompt = generatePlacesRecommendationPrompt(originName, destinationName, distance, duration);
+  
+  // URL format for gemini-2.0-flash
+  const url = `${geminiConfig.baseUrl}/models/${geminiConfig.model}:generateContent?key=${geminiConfig.apiKey}`;
+
+  try {
+    console.log(`Requesting Gemini route places recommendation for ${originName} to ${destinationName}`);
+    
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: prompt
+          }]
+        }],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 800,
+          topK: 40,
+          topP: 0.95
+        },
+        safetySettings: [
+          {
+            category: "HARM_CATEGORY_HARASSMENT",
+            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+          },
+          {
+            category: "HARM_CATEGORY_HATE_SPEECH",
+            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+          },
+          {
+            category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+          },
+          {
+            category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+            threshold: "BLOCK_MEDIUM_AND_ABOVE"
+          }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      const errorData = await response.json();
+      console.error('Gemini API error:', errorData);
+      throw new Error(`Gemini API error: ${response.status} ${response.statusText}`);
+    }
+
+    const data: GeminiResponse = await response.json();
+    
+    // Extract and parse the recommendation from the response
+    if (data.candidates && data.candidates.length > 0 && data.candidates[0].content.parts.length > 0) {
+      const responseText = data.candidates[0].content.parts[0].text;
+      console.log('Gemini places recommendation response:', responseText);
+      
+      return extractJsonObjectFromResponse(responseText) as GeminiRoutePlacesRecommendation;
+    }
+    
+    throw new Error('No places recommendation received from Gemini API');
+  } catch (error) {
+    console.error('Error fetching route places recommendation from Gemini:', error);
     throw error;
   }
 } 
